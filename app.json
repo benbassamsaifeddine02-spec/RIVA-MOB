@@ -1,0 +1,17 @@
+{
+  "expo": {
+    "name": "RIVA-MOB",
+    "slug": "riva-mob",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "scheme": "riva-mob",
+    "android": {
+      "package": "ma.rivaindustries.rivamob"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-image-picker"
+    ]
+  }
+}
