@@ -161,7 +161,12 @@ class MainActivity : ComponentActivity() {
                                         OutlinedButton(onClick = { megaFolderPicker.launch(null) }, modifier = Modifier.weight(1f)) { Text("Link MEGA folder") }
                                     }
                                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                                        OutlinedButton(onClick = { scheduleMegaBackup(this@MainActivity); integrationStatusState.value = "MEGA backup queued. It will run on any connected network." }) { Text("Back up now") }
+                                        OutlinedButton(onClick = {
+                                            if (getSharedPreferences("wave_integrations", Context.MODE_PRIVATE).contains("mega_tree_uri")) {
+                                                scheduleMegaBackup(this@MainActivity)
+                                                integrationStatusState.value = "MEGA backup queued. It will run on any connected network."
+                                            } else integrationStatusState.value = "Link your MEGA backup folder first."
+                                        }) { Text("Back up now") }
                                         Text("${importedTracks.size} imported tracks", style = MaterialTheme.typography.labelSmall, color = Color.LightGray)
                                     }
                                     if (integrationStatus.isNotBlank()) Text(integrationStatus, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
