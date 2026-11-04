@@ -2,6 +2,7 @@ package com.musicplatform.app
 
 import android.app.DownloadManager
 import android.content.Context
+import android.content.ComponentName
 import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
@@ -30,7 +31,10 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.media3.common.MediaItem
-import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.session.MediaController
+import androidx.media3.session.SessionToken
+import androidx.media3.common.MediaMetadata
+import com.google.common.util.concurrent.ListenableFuture
 import coil.compose.AsyncImage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -46,12 +50,15 @@ private data class Album(val id: String, val title: String, val artist: String, 
 private data class AudioFile(val name: String, val url: String, val size: Long)
 
 class MainActivity : ComponentActivity() {
-    private lateinit var player: ExoPlayer
+    private var controllerFuture: ListenableFuture<MediaController>? = null
+    private var mediaController: MediaController? = null
 
     @OptIn(ExperimentalMaterial3Api::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        player = ExoPlayer.Builder(this).build()
+        val token = SessionToken(this, ComponentName(this, PlaybackService::class.java))
+        controllerFuture = MediaController.Builder(this, token).buildAsync()
+        controllerFuture?.addListener({ try { mediaController = controllerFuture?.get() } catch (_: Exception) { Toast.makeText(this, "Playback service unavailable", Toast.LENGTH_SHORT).show() } }, mainExecutor)
         setContent {
             val scope = rememberCoroutineScope()
             var query by remember { mutableStateOf("") }
@@ -156,7 +163,7 @@ class MainActivity : ComponentActivity() {
                                         leadingContent = { Icon(Icons.Default.MusicNote, null) },
                                         trailingContent = {
                                             Row {
-                                                IconButton(onClick = { player.setMediaItem(MediaItem.fromUri(file.url)); player.prepare(); player.play() }) { Icon(Icons.Default.PlayArrow, "Play") }
+                                                IconButton(onClick = { val items = files.map { audio -> MediaItem.Builder().setUri(audio.url).setMediaMetadata(MediaMetadata.Builder().setTitle(audio.name.substringAfterLast('/')).setArtist(selected?.artist ?: "WAVE MUSIC").build()).build() }; mediaController?.setMediaItems(items, files.indexOf(file), 0L); mediaController?.prepare(); mediaController?.play() }) { Icon(Icons.Default.PlayArrow, "Play queue") }
                                                 IconButton(onClick = { download(file) }) { Icon(Icons.Default.Download, "Download") }
                                             }
                                         }
@@ -184,7 +191,7 @@ class MainActivity : ComponentActivity() {
         } catch (e: Exception) { Toast.makeText(this, "Download failed to start", Toast.LENGTH_SHORT).show() }
     }
 
-    override fun onDestroy() { player.release(); super.onDestroy() }
+    override fun onDestroy() { controllerFuture?.let { MediaController.releaseFuture(it) }; super.onDestroy() }
 }
 
 private fun getJson(url: String): JSONObject {
