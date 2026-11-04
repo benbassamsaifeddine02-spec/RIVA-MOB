@@ -12,8 +12,6 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.core.content.FileProvider
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -74,18 +72,6 @@ class MainActivity : ComponentActivity() {
             val scope = rememberCoroutineScope()
             val importedTracks by importedTracksState
             val integrationStatus by integrationStatusState
-            val megaFolderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
-                if (uri != null) {
-                    try {
-                        contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
-                        getSharedPreferences("wave_integrations", Context.MODE_PRIVATE).edit().putString("mega_tree_uri", uri.toString()).apply()
-                        integrationStatusState.value = "Backup folder linked. New Telegram imports will be backed up over any available network."
-                        scheduleMegaBackup(this)
-                    } catch (e: Exception) {
-                        integrationStatusState.value = "Could not access the selected folder: " + (e.message ?: "permission error")
-                    }
-                }
-            }
             var query by remember { mutableStateOf("") }
             var albums by remember { mutableStateOf(emptyList<Album>()) }
             var selected by remember { mutableStateOf<Album?>(null) }
