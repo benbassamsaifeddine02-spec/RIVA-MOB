@@ -11,6 +11,7 @@ import android.os.Environment
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.core.content.FileProvider
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
@@ -43,11 +44,6 @@ import coil.compose.AsyncImage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import androidx.work.Constraints
-import androidx.work.ExistingWorkPolicy
-import androidx.work.NetworkType
-import androidx.work.OneTimeWorkRequestBuilder
-import androidx.work.WorkManager
 import java.io.File
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -158,19 +154,14 @@ class MainActivity : ComponentActivity() {
                                             try { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link))) }
                                             catch (_: Exception) { integrationStatusState.value = "Telegram could not be opened." }
                                         }, modifier = Modifier.weight(1f)) { Text("Open Telegram") }
-                                        OutlinedButton(onClick = { megaFolderPicker.launch(null) }, modifier = Modifier.weight(1f)) { Text("Link MEGA folder") }
+                                        OutlinedButton(onClick = { openMegaApp() }, modifier = Modifier.weight(1f)) { Text("Open MEGA") }
                                     }
                                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                                        OutlinedButton(onClick = {
-                                            if (getSharedPreferences("wave_integrations", Context.MODE_PRIVATE).contains("mega_tree_uri")) {
-                                                scheduleMegaBackup(this@MainActivity)
-                                                integrationStatusState.value = "MEGA backup queued. It will run on any connected network."
-                                            } else integrationStatusState.value = "Link your MEGA backup folder first."
-                                        }) { Text("Back up now") }
+                                        OutlinedButton(onClick = { integrationStatusState.value = "Use the MEGA action beside each imported track to upload it." }) { Text("MEGA upload help") }
                                         Text("${importedTracks.size} imported tracks", style = MaterialTheme.typography.labelSmall, color = Color.LightGray)
                                     }
                                     if (integrationStatus.isNotBlank()) Text(integrationStatus, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
-                                    Text("Telegram: share audio from its chat to WAVE MUSIC. MEGA: select a cloud folder in the system picker; provider support depends on the MEGA app installed.", style = MaterialTheme.typography.bodySmall, color = Color.LightGray)
+                                    Text("Telegram: share audio from its chat to WAVE MUSIC. MEGA: upload imported tracks through the installed MEGA app.", style = MaterialTheme.typography.bodySmall, color = Color.LightGray)
                                 }
                             }
                             if (importedTracks.isNotEmpty()) {
@@ -182,10 +173,13 @@ class MainActivity : ComponentActivity() {
                                         supportingContent = { Text("Saved on this phone · ${track.size / 1000000} MB") },
                                         leadingContent = { Icon(Icons.Default.MusicNote, null) },
                                         trailingContent = {
-                                            IconButton(onClick = {
-                                                val item = MediaItem.Builder().setUri(Uri.parse(track.url)).setMediaMetadata(MediaMetadata.Builder().setTitle(track.name).setArtist("Telegram import").build()).build()
-                                                mediaController?.setMediaItem(item); mediaController?.prepare(); mediaController?.play()
-                                            }) { Icon(Icons.Default.PlayArrow, "Play imported track") }
+                                            Row {
+                                                IconButton(onClick = {
+                                                    val item = MediaItem.Builder().setUri(Uri.parse(track.url)).setMediaMetadata(MediaMetadata.Builder().setTitle(track.name).setArtist("Telegram import").build()).build()
+                                                    mediaController?.setMediaItem(item); mediaController?.prepare(); mediaController?.play()
+                                                }) { Icon(Icons.Default.PlayArrow, "Play imported track") }
+                                                TextButton(onClick = { uploadWithMega(track) }) { Text("MEGA") }
+                                            }
                                         }
                                     )
                                 }
@@ -305,6 +299,37 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun openMegaApp() {
+        val launch = packageManager.getLaunchIntentForPackage("mega.privacy.android.app")
+            ?: packageManager.getLaunchIntentForPackage("mega.privacy.android.app.lite")
+        if (launch != null) startActivity(launch)
+        else integrationStatusState.value = "Install the official MEGA app to upload imported audio."
+    }
+
+    private fun uploadWithMega(track: AudioFile) {
+        try {
+            val source = File(Uri.parse(track.url).path ?: throw IllegalStateException("Local audio path unavailable"))
+            if (!source.exists()) throw IllegalStateException("Imported audio file not found")
+            val uri = FileProvider.getUriForFile(this, packageName + ".fileprovider", source)
+            val mime = when (source.extension.lowercase()) {
+                "mp3" -> "audio/mpeg"
+                "ogg", "oga" -> "audio/ogg"
+                "m4a", "mp4" -> "audio/mp4"
+                "wav" -> "audio/wav"
+                "flac" -> "audio/flac"
+                else -> "audio/*"
+            }
+            val send = Intent(Intent.ACTION_SEND).apply {
+                type = mime
+                putExtra(Intent.EXTRA_STREAM, uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            startActivity(Intent.createChooser(send, "Upload audio with MEGA"))
+        } catch (e: Exception) {
+            integrationStatusState.value = "Could not share with MEGA: " + (e.message ?: "unknown error")
+        }
+    }
+
     private fun loadImportedTracks() {
         val folder = File(filesDir, "imports")
         if (!folder.exists()) folder.mkdirs()
@@ -337,7 +362,6 @@ class MainActivity : ComponentActivity() {
         }
         loadImportedTracks()
         integrationStatusState.value = if (imported > 0) "$imported audio file(s) imported from Telegram." else "No audio file could be imported from the shared item."
-        if (imported > 0 && getSharedPreferences("wave_integrations", Context.MODE_PRIVATE).contains("mega_tree_uri")) scheduleMegaBackup(this)
     }
 
     private fun queryDisplayName(uri: Uri): String? {
@@ -368,12 +392,6 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() { controllerFuture?.let { MediaController.releaseFuture(it) }; super.onDestroy() }
-}
-
-private fun scheduleMegaBackup(context: Context) {
-    val constraints = Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
-    val request = OneTimeWorkRequestBuilder<MegaBackupWorker>().setConstraints(constraints).build()
-    WorkManager.getInstance(context).enqueueUniqueWork("wave-mega-backup", ExistingWorkPolicy.APPEND_OR_REPLACE, request)
 }
 
 private fun getJson(url: String): JSONObject {
