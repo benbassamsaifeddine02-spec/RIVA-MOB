@@ -18,6 +18,7 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -83,7 +84,8 @@ class MainActivity : ComponentActivity() {
                     topBar = {
                         TopAppBar(
                             title = { Column { Text("WAVE MUSIC", fontWeight = FontWeight.Black); Text("ONLINE MUSIC DISCOVERY", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary) } },
-                            navigationIcon = { if (selected != null) IconButton(onClick = { selected = null; files = emptyList() }) { Icon(Icons.Default.ArrowBack, "Back") } }
+                            navigationIcon = { if (selected != null) IconButton(onClick = { selected = null; files = emptyList() }) { Icon(Icons.Default.ArrowBack, "Back") } },
+                            actions = { IconButton(enabled = !loading, onClick = { if (selected == null) search(query, category) else { val album = selected!!; loading = true; status = "Refreshing audio files…"; scope.launch { try { files = withContext(Dispatchers.IO) { getAudioFiles(album.id) }; status = files.size.toString() + " MP3/OGG files available" } catch (e: Exception) { status = "Refresh failed: " + (e.message ?: "network error") } finally { loading = false } } } }) { Icon(Icons.Default.Refresh, "Refresh catalogue or album") } }
                         )
                     }
                 ) { padding ->
