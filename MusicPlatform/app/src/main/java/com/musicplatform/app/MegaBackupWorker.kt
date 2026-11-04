@@ -16,7 +16,9 @@ class MegaBackupWorker(appContext: Context, params: WorkerParameters) : Coroutin
         if (!source.exists()) return Result.success()
         return try {
             source.listFiles()?.filter { it.isFile }?.forEach { file ->
-                if (tree.findFile(file.name) == null) {
+                val existing = tree.findFile(file.name)
+                if (existing == null || existing.length() == 0L) {
+                    existing?.delete()
                     val mime = when (file.extension.lowercase()) {
                         "mp3" -> "audio/mpeg"
                         "ogg", "oga" -> "audio/ogg"
