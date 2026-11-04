@@ -3,12 +3,16 @@ package com.musicplatform.app
 import android.app.DownloadManager
 import android.content.Context
 import android.content.ComponentName
+import android.content.Intent
+import android.database.Cursor
 import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -39,6 +43,12 @@ import coil.compose.AsyncImage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import androidx.work.Constraints
+import androidx.work.ExistingWorkPolicy
+import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
+import java.io.File
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URLEncoder
@@ -51,17 +61,35 @@ private data class AudioFile(val name: String, val url: String, val size: Long)
 private data class PlaylistTrack(val album: Album, val file: AudioFile)
 
 class MainActivity : ComponentActivity() {
+    private val importedTracksState = mutableStateOf<List<AudioFile>>(emptyList())
+    private val integrationStatusState = mutableStateOf("")
     private var controllerFuture: ListenableFuture<MediaController>? = null
     private var mediaController: MediaController? = null
 
     @OptIn(ExperimentalMaterial3Api::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        loadImportedTracks()
+        handleIncomingShare(intent)
         val token = SessionToken(this, ComponentName(this, PlaybackService::class.java))
         controllerFuture = MediaController.Builder(this, token).buildAsync()
         controllerFuture?.addListener({ try { mediaController = controllerFuture?.get() } catch (_: Exception) { Toast.makeText(this, "Playback service unavailable", Toast.LENGTH_SHORT).show() } }, mainExecutor)
         setContent {
             val scope = rememberCoroutineScope()
+            val importedTracks by importedTracksState
+            val integrationStatus by integrationStatusState
+            val megaFolderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+                if (uri != null) {
+                    try {
+                        contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                        getSharedPreferences("wave_integrations", Context.MODE_PRIVATE).edit().putString("mega_tree_uri", uri.toString()).apply()
+                        integrationStatusState.value = "Backup folder linked. New Telegram imports will be backed up over any available network."
+                        scheduleMegaBackup(this)
+                    } catch (e: Exception) {
+                        integrationStatusState.value = "Could not access the selected folder: " + (e.message ?: "permission error")
+                    }
+                }
+            }
             var query by remember { mutableStateOf("") }
             var albums by remember { mutableStateOf(emptyList<Album>()) }
             var selected by remember { mutableStateOf<Album?>(null) }
@@ -119,6 +147,44 @@ class MainActivity : ComponentActivity() {
                             Spacer(Modifier.height(12.dp))
                             Text("Discover independent music.", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
                             Text("Real releases, artists and playlists from openly licensed sources.", color = Color.LightGray, style = MaterialTheme.typography.bodySmall)
+                            Spacer(Modifier.height(10.dp))
+                            Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF1B1E26))) {
+                                Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Text("PHONE INTEGRATIONS", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        Button(onClick = {
+                                            val text = query.ifBlank { "Search for music" }
+                                            val link = "https://t.me/spotifybot?text=" + URLEncoder.encode(text, "UTF-8")
+                                            try { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link))) }
+                                            catch (_: Exception) { integrationStatusState.value = "Telegram could not be opened." }
+                                        }, modifier = Modifier.weight(1f)) { Text("Open Telegram") }
+                                        OutlinedButton(onClick = { megaFolderPicker.launch(null) }, modifier = Modifier.weight(1f)) { Text("Link MEGA folder") }
+                                    }
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        OutlinedButton(onClick = { scheduleMegaBackup(this@MainActivity); integrationStatusState.value = "MEGA backup queued. It will run on any connected network." }) { Text("Back up now") }
+                                        Text("${importedTracks.size} imported tracks", style = MaterialTheme.typography.labelSmall, color = Color.LightGray)
+                                    }
+                                    if (integrationStatus.isNotBlank()) Text(integrationStatus, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                                    Text("Telegram: share audio from its chat to WAVE MUSIC. MEGA: select a cloud folder in the system picker; provider support depends on the MEGA app installed.", style = MaterialTheme.typography.bodySmall, color = Color.LightGray)
+                                }
+                            }
+                            if (importedTracks.isNotEmpty()) {
+                                Spacer(Modifier.height(8.dp))
+                                Text("TELEGRAM IMPORTS", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelLarge)
+                                importedTracks.take(5).forEach { track ->
+                                    ListItem(
+                                        headlineContent = { Text(track.name, maxLines = 1) },
+                                        supportingContent = { Text("Saved on this phone · ${track.size / 1000000} MB") },
+                                        leadingContent = { Icon(Icons.Default.MusicNote, null) },
+                                        trailingContent = {
+                                            IconButton(onClick = {
+                                                val item = MediaItem.Builder().setUri(Uri.parse(track.url)).setMediaMetadata(MediaMetadata.Builder().setTitle(track.name).setArtist("Telegram import").build()).build()
+                                                mediaController?.setMediaItem(item); mediaController?.prepare(); mediaController?.play()
+                                            }) { Icon(Icons.Default.PlayArrow, "Play imported track") }
+                                        }
+                                    )
+                                }
+                            }
                             Spacer(Modifier.height(12.dp))
                             OutlinedTextField(
                                 value = query, onValueChange = { query = it }, modifier = Modifier.fillMaxWidth(),
@@ -234,6 +300,55 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun loadImportedTracks() {
+        val folder = File(filesDir, "imports")
+        if (!folder.exists()) folder.mkdirs()
+        importedTracksState.value = folder.listFiles()?.filter { it.isFile }?.sortedByDescending { it.lastModified() }
+            ?.map { AudioFile(it.name, Uri.fromFile(it).toString(), it.length()) } ?: emptyList()
+    }
+
+    private fun handleIncomingShare(incoming: Intent?) {
+        if (incoming == null || (incoming.action != Intent.ACTION_SEND && incoming.action != Intent.ACTION_SEND_MULTIPLE)) return
+        val uris = mutableListOf<Uri>()
+        if (incoming.action == Intent.ACTION_SEND) {
+            @Suppress("DEPRECATION")
+            (incoming.getParcelableExtra<Uri>(Intent.EXTRA_STREAM))?.let { uris.add(it) }
+        } else {
+            @Suppress("DEPRECATION")
+            incoming.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)?.let { uris.addAll(it) }
+        }
+        incoming.clipData?.let { clip -> for (i in 0 until clip.itemCount) clip.getItemAt(i).uri?.let { uris.add(it) } }
+        val folder = File(filesDir, "imports").apply { mkdirs() }
+        var imported = 0
+        uris.distinct().forEach { uri ->
+            try {
+                val displayName = queryDisplayName(uri) ?: "telegram-audio-${System.currentTimeMillis()}.audio"
+                val safeName = displayName.substringAfterLast('/').replace(Regex("[^A-Za-z0-9._ -]"), "_").take(120)
+                var target = File(folder, safeName)
+                if (target.exists()) target = File(folder, System.currentTimeMillis().toString() + "-" + safeName)
+                contentResolver.openInputStream(uri)?.use { input -> target.outputStream().use { output -> input.copyTo(output) } }
+                if (target.exists() && target.length() > 0L) imported++
+            } catch (_: Exception) { }
+        }
+        loadImportedTracks()
+        integrationStatusState.value = if (imported > 0) "$imported audio file(s) imported from Telegram." else "No audio file could be imported from the shared item."
+        if (imported > 0 && getSharedPreferences("wave_integrations", Context.MODE_PRIVATE).contains("mega_tree_uri")) scheduleMegaBackup(this)
+    }
+
+    private fun queryDisplayName(uri: Uri): String? {
+        var cursor: Cursor? = null
+        return try {
+            cursor = contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)
+            if (cursor != null && cursor.moveToFirst()) cursor.getString(0) else null
+        } catch (_: Exception) { null } finally { cursor?.close() }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIncomingShare(intent)
+    }
+
     private fun download(file: AudioFile) {
         try {
             val request = DownloadManager.Request(Uri.parse(file.url))
@@ -248,6 +363,12 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() { controllerFuture?.let { MediaController.releaseFuture(it) }; super.onDestroy() }
+}
+
+private fun scheduleMegaBackup(context: Context) {
+    val constraints = Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
+    val request = OneTimeWorkRequestBuilder<MegaBackupWorker>().setConstraints(constraints).build()
+    WorkManager.getInstance(context).enqueueUniqueWork("wave-mega-backup", ExistingWorkPolicy.APPEND_OR_REPLACE, request)
 }
 
 private fun getJson(url: String): JSONObject {
