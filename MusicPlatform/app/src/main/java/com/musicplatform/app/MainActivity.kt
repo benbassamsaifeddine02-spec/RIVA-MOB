@@ -84,7 +84,7 @@ class MainActivity : ComponentActivity() {
                     try {
                         if (mode == "AI Mood") {
                             val moodQuery = moodSearchTerms(term)
-                            val found = withContext(Dispatchers.IO) { searchArchive(moodQuery) }
+                            val found = withContext(Dispatchers.IO) { searchArchive(moodQuery, broadMatch = true) }
                             val curated = withContext(Dispatchers.IO) {
                                 found.take(8).flatMap { album -> getAudioFiles(album.id).map { PlaylistTrack(album, it) } }.take(30)
                             }
@@ -258,9 +258,11 @@ private fun getJson(url: String): JSONObject {
     return try { JSONObject(c.inputStream.bufferedReader().use { it.readText() }) } finally { c.disconnect() }
 }
 
-private fun searchArchive(term: String): List<Album> {
-    val safe = term.trim().split(Regex("\\s+")).filter { it.isNotBlank() }.joinToString(" AND ") { it.replace(Regex("[^A-Za-z0-9_-]"), "") }.ifBlank { "" }
-    val q = "mediatype:audio AND licenseurl:http*by*" + if (safe.isBlank()) "" else " AND (" + safe.split(" AND ").joinToString(" AND ") { "(title:$it OR creator:$it OR subject:$it)" } + ")"
+private fun searchArchive(term: String, broadMatch: Boolean = false): List<Album> {
+    val tokens = term.trim().split(Regex("\\s+")).map { it.replace(Regex("[^A-Za-z0-9_-]"), "") }.filter { it.isNotBlank() }
+    val clauses = tokens.map { "(title:$it OR creator:$it OR subject:$it)" }
+    val matchExpression = if (broadMatch) clauses.joinToString(" OR ") else clauses.joinToString(" AND ")
+    val q = "mediatype:audio AND licenseurl:http*by*" + if (matchExpression.isBlank()) "" else " AND ($matchExpression)"
     val fields = "identifier,title,creator,year,licenseurl,downloads"
     val url = "https://archive.org/advancedsearch.php?q=" + URLEncoder.encode(q, "UTF-8") +
         "&fl[]=" + fields.replace(",", "&fl[]=") + "&rows=30&page=1&output=json&sort[]=downloads+desc"
