@@ -48,6 +48,7 @@ private data class Album(val id: String, val title: String, val artist: String, 
     val cover: String get() = "https://archive.org/services/img/" + id
 }
 private data class AudioFile(val name: String, val url: String, val size: Long)
+private data class PlaylistTrack(val album: Album, val file: AudioFile)
 
 class MainActivity : ComponentActivity() {
     private var controllerFuture: ListenableFuture<MediaController>? = null
@@ -68,23 +69,40 @@ class MainActivity : ComponentActivity() {
             var loading by remember { mutableStateOf(false) }
             var status by remember { mutableStateOf("Loading online music catalogue…") }
             var category by remember { mutableStateOf("Featured") }
+            var searchMode by remember { mutableStateOf("Albums") }
+            var moodTracks by remember { mutableStateOf(emptyList<PlaylistTrack>()) }
+            var moodPlaylistTitle by remember { mutableStateOf("") }
 
-            fun search(term: String, label: String) {
+            fun search(term: String, label: String, mode: String = searchMode) {
                 category = label
+                searchMode = mode
                 selected = null
+                moodTracks = emptyList()
                 loading = true
-                status = "Searching Internet Archive…"
+                status = if (mode == "AI Mood") "Curating a mood playlist…" else "Searching the music catalogue…"
                 scope.launch {
                     try {
-                        albums = withContext(Dispatchers.IO) { searchArchive(term) }
-                        status = albums.size.toString() + " results · Creative Commons catalogue"
+                        if (mode == "AI Mood") {
+                            val moodQuery = moodSearchTerms(term)
+                            val found = withContext(Dispatchers.IO) { searchArchive(moodQuery) }
+                            val curated = withContext(Dispatchers.IO) {
+                                found.take(8).flatMap { album -> getAudioFiles(album.id).map { PlaylistTrack(album, it) } }.take(30)
+                            }
+                            albums = found
+                            moodTracks = curated
+                            moodPlaylistTitle = "WAVE MIX · " + (term.ifBlank { "Discover" }).take(48)
+                            status = if (curated.isEmpty()) "No playable tracks found for this mood. Try another description." else curated.size.toString() + " tracks curated from openly licensed releases"
+                        } else {
+                            albums = withContext(Dispatchers.IO) { searchArchive(term) }
+                            status = albums.size.toString() + " results · openly licensed catalogue"
+                        }
                     } catch (e: Exception) {
                         status = "Network error: " + (e.message ?: "catalogue unavailable")
                     } finally { loading = false }
                 }
             }
 
-            LaunchedEffect(Unit) { search("", "Featured") }
+            LaunchedEffect(Unit) { search("", "Featured", "Albums") }
 
             MaterialTheme(colorScheme = darkColorScheme(primary = Color(0xFF1ED760), background = Color(0xFF101218), surface = Color(0xFF191C24))) {
                 Scaffold(
@@ -92,7 +110,7 @@ class MainActivity : ComponentActivity() {
                         TopAppBar(
                             title = { Column { Text("WAVE MUSIC", fontWeight = FontWeight.Black); Text("ONLINE MUSIC DISCOVERY", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary) } },
                             navigationIcon = { if (selected != null) IconButton(onClick = { selected = null; files = emptyList() }) { Icon(Icons.Default.ArrowBack, "Back") } },
-                            actions = { IconButton(enabled = !loading, onClick = { if (selected == null) search(query, category) else { val album = selected!!; loading = true; status = "Refreshing audio files…"; scope.launch { try { files = withContext(Dispatchers.IO) { getAudioFiles(album.id) }; status = files.size.toString() + " MP3/OGG files available" } catch (e: Exception) { status = "Refresh failed: " + (e.message ?: "network error") } finally { loading = false } } } }) { Icon(Icons.Default.Refresh, "Refresh catalogue or album") } }
+                            actions = { IconButton(enabled = !loading, onClick = { if (selected == null) search(query, category, searchMode) else { val album = selected!!; loading = true; status = "Refreshing audio files…"; scope.launch { try { files = withContext(Dispatchers.IO) { getAudioFiles(album.id) }; status = files.size.toString() + " MP3/OGG files available" } catch (e: Exception) { status = "Refresh failed: " + (e.message ?: "network error") } finally { loading = false } } } }) { Icon(Icons.Default.Refresh, "Refresh catalogue or album") } }
                         )
                     }
                 ) { padding ->
@@ -104,22 +122,60 @@ class MainActivity : ComponentActivity() {
                             Spacer(Modifier.height(12.dp))
                             OutlinedTextField(
                                 value = query, onValueChange = { query = it }, modifier = Modifier.fillMaxWidth(),
-                                placeholder = { Text("Search albums, artists, genres…") }, leadingIcon = { Icon(Icons.Default.Search, null) },
-                                trailingIcon = { IconButton(onClick = { search(query, "Search") }) { Icon(Icons.Default.Search, "Search") } }, singleLine = true
+                                placeholder = { Text(when (searchMode) { "Tracks" -> "Search song titles or artists…"; "AI Mood" -> "Describe a mood or activity…"; else -> "Search albums or artists…" }) }, leadingIcon = { Icon(Icons.Default.Search, null) },
+                                trailingIcon = { IconButton(enabled = !loading, onClick = { search(query, "Search", searchMode) }) { Icon(Icons.Default.Search, "Search") } }, singleLine = true
                             )
+                            Spacer(Modifier.height(8.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                listOf("Tracks", "Albums", "AI Mood").forEach { mode ->
+                                    FilterChip(selected = searchMode == mode, onClick = { searchMode = mode }, label = { Text(mode) })
+                                }
+                            }
+                            if (searchMode == "AI Mood") {
+                                Text("Try: focus, night drive, gym, happy, chill, romantic, sad, study", color = Color.LightGray, style = MaterialTheme.typography.labelSmall)
+                            }
                             Spacer(Modifier.height(8.dp))
                             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 listOf("Featured", "Electronic", "Jazz", "Rock").forEach { label ->
                                     FilterChip(selected = category == label, onClick = {
                                         val term = if (label == "Featured") "" else label.lowercase()
                                         query = term
-                                        search(term, label)
+                                        search(term, label, searchMode)
                                     }, label = { Text(label) })
                                 }
                             }
                             Text(status, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(vertical = 8.dp))
                             if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
-                            LazyColumn(contentPadding = PaddingValues(bottom = 18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            if (searchMode == "AI Mood" && moodTracks.isNotEmpty()) {
+                                Text(moodPlaylistTitle, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Button(onClick = {
+                                        val queue = moodTracks.map { track -> MediaItem.Builder().setUri(track.file.url).setMediaMetadata(MediaMetadata.Builder().setTitle(track.file.name.substringAfterLast('/')).setArtist(track.album.artist).build()).build() }
+                                        mediaController?.setMediaItems(queue, 0, 0L); mediaController?.prepare(); mediaController?.play()
+                                    }) { Icon(Icons.Default.PlayArrow, null); Spacer(Modifier.width(6.dp)); Text("Play playlist") }
+                                    OutlinedButton(onClick = { moodTracks = moodTracks.shuffled() }) { Text("Shuffle") }
+                                }
+                                LazyColumn(contentPadding = PaddingValues(bottom = 18.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    items(moodTracks, key = { it.album.id + it.file.name }) { track ->
+                                        ListItem(
+                                            headlineContent = { Text(track.file.name.substringAfterLast('/'), maxLines = 2) },
+                                            supportingContent = { Text(track.album.title + " · " + track.album.artist, maxLines = 1) },
+                                            leadingContent = { Icon(Icons.Default.MusicNote, null) },
+                                            trailingContent = {
+                                                IconButton(onClick = {
+                                                    val queue = moodTracks.map { item -> MediaItem.Builder().setUri(item.file.url).setMediaMetadata(MediaMetadata.Builder().setTitle(item.file.name.substringAfterLast('/')).setArtist(item.album.artist).build()).build() }
+                                                    val index = moodTracks.indexOf(track)
+                                                    mediaController?.setMediaItems(queue, index, 0L); mediaController?.prepare(); mediaController?.play()
+                                                }) { Icon(Icons.Default.PlayArrow, "Play track") }
+                                            }
+                                        )
+                                        HorizontalDivider()
+                                    }
+                                }
+                            } else if (searchMode == "AI Mood" && !loading) {
+                                Text("Describe the sound or activity you want, then tap Search to build your mix.", color = Color.LightGray, style = MaterialTheme.typography.bodySmall)
+                            }
+                            if (searchMode != "AI Mood") LazyColumn(contentPadding = PaddingValues(bottom = 18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                                 items(albums, key = { it.id }) { album ->
                                     Card(onClick = {
                                         selected = album
@@ -203,7 +259,8 @@ private fun getJson(url: String): JSONObject {
 }
 
 private fun searchArchive(term: String): List<Album> {
-    val q = "mediatype:audio AND licenseurl:http*by*" + if (term.isBlank()) "" else " AND (title:" + term + " OR creator:" + term + " OR subject:" + term + ")"
+    val safe = term.trim().split(Regex("\\s+")).filter { it.isNotBlank() }.joinToString(" AND ") { it.replace(Regex("[^A-Za-z0-9_-]"), "") }.ifBlank { "" }
+    val q = "mediatype:audio AND licenseurl:http*by*" + if (safe.isBlank()) "" else " AND (" + safe.split(" AND ").joinToString(" AND ") { "(title:$it OR creator:$it OR subject:$it)" } + ")"
     val fields = "identifier,title,creator,year,licenseurl,downloads"
     val url = "https://archive.org/advancedsearch.php?q=" + URLEncoder.encode(q, "UTF-8") +
         "&fl[]=" + fields.replace(",", "&fl[]=") + "&rows=30&page=1&output=json&sort[]=downloads+desc"
@@ -215,6 +272,23 @@ private fun searchArchive(term: String): List<Album> {
         if (id.isNotBlank()) result.add(Album(id, d.optString("title", id), d.optString("creator", "Independent artist"), d.optString("year", "").take(4), d.optString("licenseurl", ""), d.optString("downloads", "—")))
     }
     return result
+}
+
+private fun moodSearchTerms(request: String): String {
+    val text = request.lowercase()
+    return when {
+        listOf("focus", "study", "work", "concentrat").any { text.contains(it) } -> "ambient instrumental classical piano focus"
+        listOf("night drive", "driving", "road", "car").any { text.contains(it) } -> "synthwave electronic jazz rock"
+        listOf("gym", "workout", "training", "run").any { text.contains(it) } -> "energetic electronic rock funk"
+        listOf("happy", "joy", "positive", "party", "dance").any { text.contains(it) } -> "funk soul disco dance pop"
+        listOf("chill", "relax", "calm", "peace", "sleep").any { text.contains(it) } -> "ambient downtempo acoustic jazz"
+        listOf("romantic", "love", "date").any { text.contains(it) } -> "soul jazz acoustic love songs"
+        listOf("sad", "melancholy", "heartbreak").any { text.contains(it) } -> "blues soul acoustic melancholy"
+        listOf("rock", "metal").any { text.contains(it) } -> "rock alternative metal"
+        text.contains("jazz") -> "jazz bebop smooth jazz"
+        listOf("electronic", "techno", "house").any { text.contains(it) } -> "electronic techno house"
+        else -> request.trim().ifBlank { "independent music discovery" }
+    }
 }
 
 private fun getAudioFiles(id: String): List<AudioFile> {
