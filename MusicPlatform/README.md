@@ -9,3 +9,7 @@ Important: the bridge is a backend component, not yet connected to the Android U
 
 ## Android build
 Open this directory in Android Studio or use the repository GitHub Actions workflow to build the debug APK. Package: `com.musicplatform.app`; minimum Android: API 26.
+
+
+## MEGA cloud library and backup adapter
+A separate service is available in `mega-storage/`. It supports MEGA account login, encrypted session persistence, quota/status checks, root listing, uploads and downloads. It is currently a backend adapter only; the Android UI, automatic phone-download backup queue, duplicate detection, folder navigation and cross-device playback integration remain to be implemented and tested. The adapter uses the community `megajs` package, not MEGA's official SDK; see its security and compatibility notes in `mega-storage/README.md`.
